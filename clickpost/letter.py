@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from io import BytesIO
+from pathlib import Path
 from typing import Union, List, Tuple, Optional, Dict, Any
 
 import qrcode
@@ -9,8 +10,9 @@ from fpdf.enums import MethodReturnValue
 from fpdf.fonts import FontFace
 from jinja2 import Environment
 
-from clickpost.dataclasses import Template, QrBlock, ImageBlock, TableBlock, TextBlock, LineBreakBlock, LineBlock, Font, \
-    _BaseBlock
+from clickpost.block_models import Template, QrBlock, ImageBlock, TableBlock, TextBlock, LineBreakBlock, LineBlock, \
+    Font, \
+    _BaseBlock, FixedQrBlock, FixedImageBlock, FixedLineBlock, FixedTextBlock, FontName, FixedBox
 
 
 class PDF(FPDF):
@@ -21,7 +23,7 @@ class PDF(FPDF):
     wrap_x = None
     wrap_dir = None
     current_page = 0
-
+    dry_total = 0
     def __init__(self, template=Template()):
         """
         Args:
@@ -121,7 +123,7 @@ class PDF(FPDF):
         """
         Inserts a QR code onto the page
 
-        Attributes:
+        Args:
             qr_code (QrBlock): predefined qr_code block
             dry (bool): for a dryrun test - accumulates the height for testing.
 
@@ -153,7 +155,8 @@ class PDF(FPDF):
         # sets the wrap if it needs it
         self._sort_wrap(qr_img)
 
-    def insert_image(self, img: ImageBlock):
+    def insert_image(self, img: ImageBlock, dry: bool = False):
+
         """
         Writes an image into the document
 
@@ -228,13 +231,17 @@ class PDF(FPDF):
                 for datum in data_row:
                     row.cell(datum)
 
-    def insert_text(self, text: TextBlock, dry: bool = False):
+    def insert_text(self, text: Union[TextBlock, FixedTextBlock], dry: bool = False):
         """
-        Writes text into the document
+        Writes text into the document - if the last element sets the `self.wrap_on` flag then it will attempt to wrap
+        the next around the element.
 
-        Args:
-            text: (TextBlock) predefined text block
-            dry: (bool) for a dryrun test - accumulates the height for testing.
+
+        :param text: Predefined text block that holds text for writing to the page
+        :type text: TextBlock
+        :param dry: For a dryrun test - accumulates the height for testing.
+        :type dry: bool
+
         """
 
         # sets the font for this text
@@ -243,23 +250,36 @@ class PDF(FPDF):
         if self.wrap_on and not text.ignore_wrap:
             # wraps round the image if its there.
             self.insert_wrapped(text, dry)
+
+        elif isinstance(text, FixedTextBlock):
+            self.multi_cell(0, 0, txt=text, border=text.get_boarder(), align=getattr(Align, text.alignment.value),
+                            max_line_height=text.line_height, dry_run=dry, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         else:
             if self.wrap_on:
                 self._reset_margin()
             # writes the text
-            self.multi_cell(0, 0, txt=text, border=0, align=getattr(Align, text.alignment),
+            self.multi_cell(0, 0, txt=text, border=text.get_boarder(), align=getattr(Align, text.alignment.value),
                             max_line_height=text.line_height, dry_run=dry, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+
 
     def insert_wrapped(self, text: TextBlock, dry: bool = False):
         """
+        Inserts text into the document, but wrapped round the last object that assigned the `self.wrap_on` to true.
+        Splits the text up into chunks until the y position of the wrapped element is passed, then resets the margin
+        and writes the rest of the text. If the wrapped y position is not met, the flag is not removed and the next
+        written element will also wrap.
 
-        Args:
-            text: (TextBlock) the text we need to wrap around the image
-            dry: (bool) for a dryrun test - accumulates the height for testing.
+        :param text: Rhe text we need to wrap around the image
+        :type text: str
+        :param dry: For a dryrun test - accumulates the height for testing.
+        :type dry: bool
 
-        Returns:
+        :return: None
+        :rtype: None
 
         """
+
         # split the words into a list so we can try work by work.
         words = text.text.split(" ")
         # get the array to hold each work we've checked
@@ -299,9 +319,10 @@ class PDF(FPDF):
         """
         Writes blank space into the document
 
-        Args:
-            line_break: (LineBreakBlock) predefined line_break
-            dry: (bool) for a dryrun test - accumulates the height for testing.
+        :param line_break: predefined line_break (space) in the document
+        :type line_break: LineBreakBlock
+        :param dry: for a dryrun test - accumulates the height for testing.
+        :type dry: bool
         """
         # writes the text
         if line_break.height:
@@ -311,12 +332,16 @@ class PDF(FPDF):
 
     def insert_line(self, line: LineBlock, dry: bool = False):
         """
-        Writes a solid line into the document, including passing if needed. To get a thickness, I've done a loop
-        so the call happens multiple times.
+        Writes a solid line into the document, including padding if needed.
 
-        Args:
-            line: (LineBlock) predefined solid
-            dry: (bool) for a dryrun test - accumulates the height for testing.
+        :param line: predefined solid line
+        :type line: LineBlock
+        :param dry: predefined solid line
+        :type dry: bool
+
+        :return: None
+        :rtype: None
+
         """
 
         def padd(padding):
@@ -337,21 +362,92 @@ class PDF(FPDF):
         # becuase lines done change the current y value, it needs updating here.
         self.set_y(y)
 
-    def _set_font(self, font_default: Optional[Font] = None):
+    def insert_box(self, box: FixedBox, dry: bool = False):
+        """
+
+        Inserts a box into the document, with border and fill colour.
+
+        :param box:  solid line
+        :type box: LineBlock
+        :param dry: predefined solid line
+        :type dry: bool
+
+        :return: None
+        :rtype: None
+
+        """
+
+        #set_draw_color
+        #set_fill_color
+        #reset after
+
+
+
+
+    def _font_needs_load(self, font: Font):
+        """
+        Checks if the font has been loaded into the system, if not, it loads it.
+
+        :param font: An instance of the Font class which contains font settings.
+        :type font: Font
+
+        :return: font name
+        :rtype: str
+
+        """
+
+        if isinstance(font.font_name, Path) and font.font_name.stem not in self.loaded_fonts:
+            # need to load the font into the system
+            self.add_font(fname=str(font.font_name.absolute()))
+            # add the font name to the fonts `font_name` attribute
+            font_name_from_stem = font.font_name.stem
+            font.font_name = font_name_from_stem
+            # add the font name to the list of loaded fonts
+            self.loaded_fonts.append(font.font_name)
+            # return the font name
+            return font_name_from_stem
+
+        return font.font_name
+
+
+    def _set_font(self, font: Optional[Font] = None):
         """
         Set the font attributes for the text.
 
-        Args:
-            font_default (Font, optional): An instance of the Font class which contains font settings.
-                                                  If None, the default font settings are used.
-        """
-        if font_default is None:
-            font_default = self.template.default_font
+        :param font: An instance of the Font class which contains font settings. If None, the default font settings are used.
+        :type font: Optional[Font]
 
-        self.set_font(size=font_default.font_size)
-        self.set_font(family=font_default.font_name)
-        self.set_font(style=font_default.font_style)
-        self.set_text_color(*font_default.font_colour)
+        :return: None
+        :rtype: None
+
+        """
+
+
+        if font is None:
+            font = self.template.default_font
+
+        # need to check if this item needs to be loaded into the system, as you can pass custom fonts.
+
+        # set the font size
+        self.set_font(size=font.font_size)
+
+        # set the font name - it can be a string or a Path object, so we need to check.
+        if isinstance(font.font_name, FontName):
+            font_name = font.font_name.value
+        else:
+            font_name = self._font_needs_load(font)
+
+        # set the font name
+        self.set_font(family=font_name)
+
+        # set the font style, check if it's a list or not.
+        if isinstance(font.font_style, list):
+            self.set_font(style=[x.value for x in font.font_style])
+        else:
+            self.set_font(style=font.font_style.value)
+
+        # set the font colour
+        self.set_text_color(*font.font_colour)
 
     def _add_content(self, content: List[Union[_BaseBlock]], dry=True):
         """
